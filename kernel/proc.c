@@ -694,3 +694,13 @@ procdump(void)
     printf("\n");
   }
 }
+
+uint64
+getRunningProcessNum(void){
+  int num = 0;
+  for(int i=0; i<=NPROC-1; i++){
+    if(proc[i].state != UNUSED)
+      num++;
+  }
+  return num;
+}
