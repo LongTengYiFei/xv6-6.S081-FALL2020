@@ -95,3 +95,17 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_trace()
+{
+  //printf("get in to trace\n");
+  int mask;
+  if(argint(0, &mask) < 0)
+    return -1;
+  //printf("the first arg(mask) :%d\n", mask);
+
+  myproc()->traceMask = mask;
+
+  return 0;
+}
