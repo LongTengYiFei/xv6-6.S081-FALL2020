@@ -335,6 +335,8 @@ sfence_vma()
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
 
+// 这里是首先把处在低10位的Flags移掉，然后低位补充12位零。
+// 直接忽视页内偏移吗？
 #define PTE2PA(pte) (((pte) >> 10) << 12)
 
 #define PTE_FLAGS(pte) ((pte) & 0x3FF)

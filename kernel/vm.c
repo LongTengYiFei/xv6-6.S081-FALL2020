@@ -440,3 +440,33 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+// 参考freewalk
+void vmprint_helper(pagetable_t pagetable, int level){
+  for(int i=0; i<=511; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){ // is valid
+        // indent
+        for(int j=1; j<=level; j++){
+          printf("..");
+          if(j!=level){
+            printf(" ");
+          }
+        }
+
+        // pte and pa
+        printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+
+        // might recursive
+        if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+          vmprint_helper((pagetable_t)PTE2PA(pte), level+1);
+        }
+    }
+  }
+}
+
+void vmprint(pagetable_t pagetable){
+  // The first line displays the argument to vmprint.
+  printf("page table %p\n", pagetable);
+  vmprint_helper(pagetable, 1);
+}
