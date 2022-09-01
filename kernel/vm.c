@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -18,6 +20,7 @@ extern char trampoline[]; // trampoline.S
 /*
  * create a direct-map page table for the kernel.
  */
+//kvm kernel virtual memory
 void
 kvminit()
 {
@@ -47,6 +50,38 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+pagetable_t
+kvminitPerProc()
+{
+  pagetable_t kernel_pagetable_per_proc = (pagetable_t) kalloc();
+  memset(kernel_pagetable_per_proc, 0, PGSIZE);
+
+  // uart registers
+  kvmmapPerProc(kernel_pagetable_per_proc, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvmmapPerProc(kernel_pagetable_per_proc, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // CLINT
+  kvmmapPerProc(kernel_pagetable_per_proc, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+  // PLIC
+  kvmmapPerProc(kernel_pagetable_per_proc, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvmmapPerProc(kernel_pagetable_per_proc, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvmmapPerProc(kernel_pagetable_per_proc, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  kvmmapPerProc(kernel_pagetable_per_proc, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return kernel_pagetable_per_proc;
+}
+
+
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
@@ -68,6 +103,7 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
+// 参考Figure 3.2
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -108,7 +144,7 @@ walkaddr(pagetable_t pagetable, uint64 va)
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
-  return pa;
+  return pa; //不要va中的页内偏移吗？
 }
 
 // add a mapping to the kernel page table.
@@ -121,18 +157,28 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+void 
+kvmmapPerProc(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("kvmmap");
+}
+
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
 // assumes va is page aligned.
+// 这就相当于走了一遍Figure 3.2的流程，这是直接映射吗？
+// 直接映射的话，内核的地址不是直接等于物理地址吗？
 uint64
 kvmpa(uint64 va)
 {
-  uint64 off = va % PGSIZE;
+  uint64 off = va % PGSIZE;//页内偏移
   pte_t *pte;
   uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
+
+  pte = walk(myproc()->kernelPagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -156,8 +202,12 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
+    if(*pte & PTE_V){
+      // vmprint(pagetable);
+      // printf("%p\n", *pte);
+      // printf("va2 = %p\n", va);
       panic("remap");
+    }
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;

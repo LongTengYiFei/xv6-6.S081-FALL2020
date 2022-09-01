@@ -6,6 +6,9 @@
 #include "proc.h"
 #include "defs.h"
 
+// Scheduler() should use kernel_pagetable when no process is running.
+extern pagetable_t kernel_pagetable;
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -18,6 +21,7 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
+pte_t * walk(pagetable_t pagetable, uint64 va, int alloc);
 
 extern char trampoline[]; // trampoline.S
 
@@ -34,12 +38,12 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
   kvminithart();
 }
@@ -107,6 +111,26 @@ allocproc(void)
 found:
   p->pid = allocpid();
 
+  // per process kernel page table
+  p->kernelPagetable = kvminitPerProc();
+  if(p->kernelPagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // kernel stack, copy from procinit().
+  // 把procinit的代码注释，那全局的kernel page table就没有这个栈的映射了, 这还能保证每个进程的内核页表和全局的内核页表相同吗？
+  // 如何理解"For this step, each per-process kernel page table should be identical to the existing global kernel page table"
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  //printf("va1 = %p\n", va);
+  if(mappages(p->kernelPagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W) != 0)
+    panic("kvmmap per process");
+  p->kstack = va;
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     release(&p->lock);
@@ -141,6 +165,20 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kstack)
+  {
+    // va -> pte -> pa
+    pte_t* pte = walk(p->kernelPagetable, p->kstack, 0);
+    if(pte == 0)
+      panic("free proc: no pte.");
+    kfree((void*)PTE2PA(*pte));
+  }
+  p->kstack = 0;
+
+  if(p->kernelPagetable)
+    proc_freeKernelPageTable(p->kernelPagetable);
+  p->kernelPagetable = 0;
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -193,6 +231,28 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+// Free a process's kernel page table in freeproc.
+// You'll need a way to free a page table 
+// without also freeing the leaf physical memory pages.
+void 
+proc_freeKernelPageTable(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      pagetable[i] = 0;
+      uint64 child = PTE2PA(pte);
+      proc_freeKernelPageTable((pagetable_t)child);
+    }else if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) != 0){
+      // last level
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
 }
 
 // a user program that calls exec("/init")
@@ -473,10 +533,18 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // Load the process's kernel page table into the core's satp register.
+        // 为什么要放在swtch之前？
+        w_satp(MAKE_SATP(p->kernelPagetable));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
+        // Scheduler() should use kernel_pagetable when no process is running.
+        kvminithart();
         c->proc = 0;
 
         found = 1;
