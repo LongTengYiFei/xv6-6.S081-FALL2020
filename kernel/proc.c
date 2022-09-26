@@ -280,6 +280,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  copyUserMappingToKernel(p->pagetable, p->kernelPagetable, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -303,9 +304,12 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if (PGROUNDUP(sz + n) >= PLIC)
+      return -1;
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    copyUserMappingToKernel(p->pagetable, p->kernelPagetable, sz-n, sz);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -333,6 +337,7 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+
   np->sz = p->sz;
 
   np->parent = p;
@@ -349,6 +354,8 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  copyUserMappingToKernel(np->pagetable, np->kernelPagetable, 0, np->sz);
+  
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;

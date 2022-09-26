@@ -182,6 +182,8 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            vmprint(pagetable_t pagetable);
+void            copyUserMappingToKernel(pagetable_t u_pagetable, pagetable_t k_pagetable, uint64 fromSize, uint64 toSize);
+
 
 // plic.c
 void            plicinit(void);
